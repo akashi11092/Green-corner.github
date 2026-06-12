@@ -1,0 +1,350 @@
+var SPREADSHEET_ID = '1x6Rh0kS3eHvc5oUNC3IEhD5T3lVkI_yD_svp-z-SI6Q';
+var FORM_EMAIL = 'anawrizbaev5@gmail.com';
+
+function doGet() {
+  return HtmlService.createHtmlOutputFromFile('index')
+    .setTitle('Зеленый уголок - Интернет-магазин')
+    .setXFrameOptionsMode(HtmlService.XFrameOptionsMode.ALLOWALL)
+    .setSandboxMode(HtmlService.SandboxMode.IFRAME);
+}
+
+function getSpreadsheet() {
+  try {
+    if (SPREADSHEET_ID && SPREADSHEET_ID !== '') {
+      return SpreadsheetApp.openById(SPREADSHEET_ID);
+    } else {
+      var ss = SpreadsheetApp.getActiveSpreadsheet();
+      if (!ss) {
+        ss = SpreadsheetApp.create('Зеленый уголок - Магазин');
+      }
+      return ss;
+    }
+  } catch (e) {
+    Logger.log('Ошибка таблицы: ' + e.toString());
+    return SpreadsheetApp.create('Зеленый уголок - Магазин');
+  }
+}
+
+function registerUser(userData) {
+  try {
+    var ss = getSpreadsheet();
+    var sheet = ss.getSheetByName('Пользователи');
+    
+    if (!sheet) {
+      sheet = ss.insertSheet('Пользователи');
+      sheet.appendRow(['ID', 'Дата', 'ФИО', 'Телефон', 'Email', 'Карта', 'Статус']);
+    }
+    
+    var data = sheet.getDataRange().getValues();
+    for (var i = 1; i < data.length; i++) {
+      if (data[i][3] == userData.phone) {
+        return { success: false, message: 'Пользователь уже зарегистрирован' };
+      }
+    }
+    
+    var userId = 'USER_' + new Date().getTime();
+    var cardLast4 = userData.card ? userData.card.replace(/\s/g, '').slice(-4) : '****';
+    
+    // Сохраняем телефон КАК ЕСТЬ (без апострофа)
+    sheet.appendRow([userId, new Date(), userData.name, userData.phone, userData.email || '', cardLast4, 'Активен']);
+    
+    return { success: true, message: 'Регистрация успешна!', userId: userId, name: userData.name };
+  } catch (e) {
+    Logger.log('Ошибка регистрации: ' + e.toString());
+    return { success: false, message: 'Ошибка: ' + e.toString() };
+  }
+}
+
+function loginUser(phone) {
+  try {
+    var ss = getSpreadsheet();
+    var sheet = ss.getSheetByName('Пользователи');
+    
+    if (!sheet) {
+      return { success: false, message: 'Сначала зарегистрируйтесь' };
+    }
+    
+    var data = sheet.getDataRange().getValues();
+    for (var i = 1; i < data.length; i++) {
+      if (data[i][3] == phone) {
+        return { success: true, userId: data[i][0], name: data[i][2], phone: data[i][3], email: data[i][4] || '' };
+      }
+    }
+    
+    return { success: false, message: 'Пользователь не найден' };
+  } catch (e) {
+    Logger.log('Ошибка входа: ' + e.toString());
+    return { success: false, message: 'Ошибка: ' + e.toString() };
+  }
+}
+
+function processOrder(orderData) {
+  try {
+    var ss = getSpreadsheet();
+    var sheet = ss.getSheetByName('Заказы');
+    
+    if (!sheet) {
+      sheet = ss.insertSheet('Заказы');
+      sheet.appendRow(['ID', 'Дата', 'UserID', 'Имя', 'Телефон', 'Email', 'Адрес', 'Товары', 'Сумма', 'Оплата', 'Статус', 'Дата доставки']);
+    }
+    
+    var orderId = 'ORD_' + new Date().getTime();
+    var itemsText = orderData.items.map(function(item) {
+      return item.name + '|' + item.quantity + '|' + item.price + '|' + item.image;
+    }).join(';');
+    
+    var deliveryDate = new Date();
+    deliveryDate.setDate(deliveryDate.getDate() + 2);
+    
+    // ВАЖНО: Сохраняем телефон как текст с префиксом ' чтобы Google Sheets не ломал
+    var phoneValue = "'" + orderData.phone;
+    
+    sheet.appendRow([
+      orderId, 
+      new Date(), 
+      orderData.userId || '', 
+      orderData.name, 
+      phoneValue,  // <-- ТЕПЕРЬ ПРАВИЛЬНО
+      orderData.email, 
+      orderData.address, 
+      itemsText, 
+      orderData.total, 
+      orderData.paymentMethod, 
+      'Оформлен', 
+      deliveryDate
+    ]);
+    
+    Logger.log('✅ Заказ создан: ' + orderId + ' для телефона: ' + orderData.phone);
+    
+    return { success: true, message: 'Заказ оформлен!', orderId: orderId };
+  } catch (e) {
+    Logger.log('❌ Ошибка заказа: ' + e.toString());
+    return { success: false, message: 'Ошибка при оформлении: ' + e.toString() };
+  }
+}
+
+function getUserOrders(userId, userPhone) {
+  try {
+    var ss = getSpreadsheet();
+    var sheet = ss.getSheetByName('Заказы');
+    
+    Logger.log('🔍 Поиск заказов для userId: ' + userId + ', phone: ' + userPhone);
+    
+    if (!sheet) {
+      Logger.log('❌ Лист Заказы не найден');
+      return { success: true, orders: [] };
+    }
+    
+    var data = sheet.getDataRange().getValues();
+    var orders = [];
+    
+    Logger.log('📊 Всего записей в таблице: ' + data.length);
+    
+    for (var i = 1; i < data.length; i++) {
+      var orderUserId = data[i][2] || '';
+      var orderPhone = data[i][4] || '';
+      
+      // Убираем апостроф из телефона для сравнения
+      var cleanOrderPhone = orderPhone.toString().replace(/^'/, '').trim();
+      var cleanUserPhone = userPhone.toString().trim();
+      
+      Logger.log('📱 Проверка заказа #' + i + ': userId=' + orderUserId + ', orderPhone=' + cleanOrderPhone + ', userPhone=' + cleanUserPhone);
+      
+      // Ищем по userId ИЛИ по телефону
+      if (orderUserId == userId || cleanOrderPhone == cleanUserPhone) {
+        Logger.log('✅ Заказ найден!');
+        
+        var itemsArray = (data[i][7] || '').split(';');
+        var items = itemsArray.map(function(item) {
+          var parts = item.split('|');
+          return { 
+            name: parts[0] || 'Товар', 
+            quantity: parts[1] || '1', 
+            price: parts[2] || '0', 
+            image: parts[3] || '' 
+          };
+        });
+        
+        orders.push({
+          id: data[i][0],
+          date: data[i][1],
+          name: data[i][3],
+          phone: cleanOrderPhone,
+          address: data[i][6],
+          items: items,
+          total: data[i][8],
+          paymentMethod: data[i][9],
+          status: data[i][10] || 'Оформлен',
+          deliveryDate: data[i][11]
+        });
+      }
+    }
+    
+    Logger.log('🎉 Найдено заказов: ' + orders.length);
+    
+    // Сортируем по дате (новые сверху)
+    orders.sort(function(a, b) { return new Date(b.date) - new Date(a.date); });
+    
+    return { success: true, orders: orders };
+  } catch (e) {
+    Logger.log('❌ Ошибка получения заказов: ' + e.toString());
+    return { success: false, orders: [], error: e.toString() };
+  }
+}
+
+function processContactForm(formData) {
+  try {
+    var ss = getSpreadsheet();
+    var sheet = ss.getSheetByName('Заявки');
+    
+    if (!sheet) {
+      sheet = ss.insertSheet('Заявки');
+      sheet.appendRow(['Дата', 'Имя', 'Телефон', 'Email', 'Тема', 'Сообщение']);
+    }
+    
+    sheet.appendRow([new Date(), formData.name, formData.phone, formData.email, formData.subject, formData.message]);
+    
+    return { success: true, message: 'Сообщение отправлено!' };
+  } catch (e) {
+    return { success: false, message: 'Ошибка: ' + e.toString() };
+  }
+}
+
+
+function loadOrders() {
+  console.log('🔍 loadOrders вызвана');
+  console.log('currentUser:', currentUser);
+  
+  if (!currentUser) {
+    document.getElementById('ordersList').innerHTML = 
+      '<div style="text-align:center;padding:2rem;color:var(--light-text)">Пожалуйста, войдите в систему</div>';
+    return;
+  }
+  
+  // Обновляем приветствие
+  document.getElementById('welcomeText').textContent = 'Добро пожаловать, ' + currentUser.name.split(' ')[0] + '!';
+  document.getElementById('userPhoneText').textContent = currentUser.phone;
+  
+  // Показываем индикатор загрузки
+  document.getElementById('ordersList').innerHTML = 
+    '<div style="text-align:center;padding:2rem;color:var(--light-text)">Загрузка заказов...</div>';
+  
+  console.log('📞 Ищем заказы для телефона:', currentUser.phone);
+  console.log('🆔 UserID:', currentUser.userId);
+  
+  // Вызываем серверную функцию
+  google.script.run
+    .withSuccessHandler(function(response) {
+      console.log('✅ Получен ответ от сервера:', response);
+      displayOrders(response);
+    })
+    .withFailureHandler(function(error) {
+      console.error('❌ Ошибка загрузки:', error);
+      document.getElementById('ordersList').innerHTML = 
+        '<div style="text-align:center;padding:2rem;color:var(--wb-red)">❌ Ошибка загрузки: ' + error.message + '</div>';
+    })
+    .getUserOrders(currentUser.userId, currentUser.phone);
+}
+
+
+
+
+
+function displayOrders(response) {
+  var container = document.getElementById('ordersList');
+  
+  if (!response.success) {
+    container.innerHTML = 
+      '<div style="text-align:center;padding:2rem;color:var(--wb-red)">❌ Ошибка: ' + (response.error || response.message) + '</div>';
+    return;
+  }
+  
+  if (!response.orders || response.orders.length === 0) {
+    container.innerHTML = 
+      '<div style="text-align:center;padding:3rem;color:var(--light-text)">' +
+      '<p style="font-size:1.2rem;margin-bottom:1rem">📭 У вас пока нет заказов</p>' +
+      '<button class="btn" onclick="showPage(\'catalog\')">Перейти в каталог</button>' +
+      '</div>';
+    return;
+  }
+  
+  console.log('✅ Найдено заказов:', response.orders.length);
+  
+  var html = '';
+  response.orders.forEach(function(order) {
+    var statusClass = 'status-' + order.status.replace(/\s/g, '-');
+    var orderDate = new Date(order.date);
+    var day = orderDate.getDate();
+    var month = orderDate.toLocaleString('ru-RU', { month: 'short' }).toUpperCase();
+    var isPaid = order.paymentMethod === 'Онлайн-оплата';
+    
+    html += '<div class="order-card">';
+    
+    // Header
+    html += '<div class="order-card-header">';
+    html += '<div class="order-date"><span class="order-date-day">' + day + '</span>' + month + '</div>';
+    html += '<span class="order-status-badge ' + statusClass + '">' + order.status + '</span>';
+    html += '</div>';
+    
+    // Items
+    html += '<div class="order-card-body">';
+    order.items.forEach(function(item) {
+      html += '<div class="order-item-card">';
+      html += '<div class="order-item-image-container">';
+      html += '<img src="' + (item.image || 'https://via.placeholder.com/120') + '" class="order-item-image" alt="' + item.name + '">';
+      if (!isPaid) {
+        html += '<div class="unpaid-badge">НЕ ОПЛАЧЕН</div>';
+      }
+      html += '</div>';
+      html += '<div class="order-item-details">';
+      html += '<div><div class="order-item-name">Гипоаллергенным</div><div class="order-item-title">' + item.name + '</div></div>';
+      html += '<div class="order-item-quantity">' + item.quantity + ' шт.</div>';
+      html += '<div class="order-item-price">' + parseInt(item.price).toLocaleString() + ' ₽</div>';
+      html += '</div></div>';
+    });
+    html += '</div>';
+    
+    // Tracker
+    html += '<div class="order-tracker">';
+    html += '<div class="tracker-step completed"><div class="tracker-circle">✓</div><div class="tracker-label">Оформлен</div></div>';
+    html += '<div class="tracker-step ' + (order.status === 'В пути' || order.status === 'Приехал' || order.status === 'Доставлен' ? 'completed' : 'active') + '"><div class="tracker-circle">🚚</div><div class="tracker-label">В пути</div></div>';
+    html += '<div class="tracker-step ' + (order.status === 'Приехал' || order.status === 'Доставлен' ? 'completed' : '') + '"><div class="tracker-circle">🏠</div><div class="tracker-label">Приехал</div></div>';
+    html += '</div>';
+    
+    // Footer
+    html += '<div class="order-card-footer">';
+    html += '<div class="order-total-block">';
+    html += '<div class="order-total-label">К оплате</div>';
+    html += '<div class="order-total-amount">' + order.total + ' ₽</div>';
+    html += '</div>';
+    html += '<button class="order-payment-btn ' + (isPaid ? 'paid' : '') + '">' + (isPaid ? '✓ Оплачено' : 'К оплате ' + order.total + ' ₽') + '</button>';
+    html += '</div>';
+    
+    html += '</div>';
+  });
+  
+  container.innerHTML = html;
+}
+
+
+
+function getProducts() {
+  return [
+    { id: 1, category: 'Декоративно-лиственные', name: 'Монстера Делициоза', description: 'Крупное растение с резными листьями', price: 2500, image: 'https://images.unsplash.com/photo-1614594975525-e45190c55d0b?w=400' },
+    { id: 2, category: 'Декоративно-лиственные', name: 'Фикус Лирата', description: 'Фикус с крупными листьями', price: 3200, image: 'https://encrypted-tbn0.gstatic.com/images?q=tbn:ANd9GcT4lmvLDoqlHYrgDzgp6FE8jAaZX03p4DiZso0HDCNgQwnLVf0pGlUn9tgfoZm2k-xBW2i7Vv7h-uq8GfWsCjLjCiXvgaiJn7WKyfqMX3QV&s=10' },
+    { id: 3, category: 'Декоративно-лиственные', name: 'Сансевиерия', description: 'Неприхотливое растение', price: 1200, image: 'https://i.pinimg.com/1200x/08/19/d2/0819d2fcf1fb12f82922a30a992445dc.jpg' },
+    { id: 4, category: 'Декоративно-лиственные', name: 'Хлорофитум', description: 'Быстрорастущее растение', price: 800, image: 'https://i.pinimg.com/736x/96/44/34/964434fb3e9a9fc8d1c54751380b3819.jpg' },
+    { id: 5, category: 'Декоративно-лиственные', name: 'Драцена', description: 'Дерево с красной каймой', price: 1800, image: 'https://i.pinimg.com/736x/e0/da/b6/e0dab643523bb4c45e984a2ae6b4bb43.jpg' },
+    { id: 6, category: 'Цветущие растения', name: 'Спатифиллум', description: 'Цветет белыми цветами', price: 1500, image: 'https://i.pinimg.com/736x/3a/72/80/3a7280dfa1aeb7cead40dfb921912d68.jpg' },
+    { id: 7, category: 'Цветущие растения', name: 'Антуриум', description: 'Яркие красные цветы', price: 2100, image: 'https://i.pinimg.com/736x/f0/13/55/f013550125a920b6f8c9c94cc57206a1.jpg' },
+    { id: 8, category: 'Цветущие растения', name: 'Орхидея', description: 'Классическая орхидея', price: 1900, image: 'https://i.pinimg.com/736x/2f/d0/98/2fd0989b6d634525d97c05890c7b12ed.jpg' },
+    { id: 9, category: 'Цветущие растения', name: 'Фиалка', description: 'Компактное растение', price: 600, image: 'https://i.pinimg.com/1200x/05/5b/9c/055b9ca2083c007c75677add98eb2c11.jpg' },
+    { id: 10, category: 'Цветущие растения', name: 'Бегония', description: 'Непрерывное цветение', price: 900, image: 'https://i.pinimg.com/1200x/72/12/5d/72125dbb147f5bd76f79ac36b13b8ce9.jpg' },
+    { id: 11, category: 'Суккуленты и кактусы', name: 'Кактус Цереус', description: 'Колонновидный кактус', price: 1100, image: 'https://i.pinimg.com/736x/83/f9/b4/83f9b413e7c83079fdaffeede60186b5.jpg' },
+    { id: 12, category: 'Суккуленты и кактусы', name: 'Эчеверия', description: 'Розеточный суккулент', price: 700, image: 'https://i.pinimg.com/736x/b2/e2/e6/b2e2e640965de315ad8a0cc7d6f541f9.jpg' },
+    { id: 13, category: 'Суккуленты и кактусы', name: 'Алоэ Вера', description: 'Лекарственное растение', price: 950, image: 'https://i.pinimg.com/736x/d4/19/00/d419005acccc8e90ac700a7599699258.jpg' },
+    { id: 14, category: 'Суккуленты и кактусы', name: 'Хавортия', description: 'Суккулент с полосками', price: 650, image: 'https://i.pinimg.com/1200x/a2/f4/38/a2f43855907cf4059e7e0777042232ed.jpg' },
+    { id: 15, category: 'Суккуленты и кактусы', name: 'Денежное дерево', description: 'Символ достатка', price: 1300, image: 'https://i.pinimg.com/736x/e0/fe/8a/e0fe8a517e71397bc1293d73addd066d.jpg' }
+  ];
+}
+
